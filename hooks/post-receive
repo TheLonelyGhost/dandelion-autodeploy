@@ -1,0 +1,138 @@
+#!/bin/sh +x
+#
+# A script to deploy based on commit information.
+#
+# Config
+# ------
+# deployment.configs.production
+#   File pattern for dandelion config files to one or more production servers
+# deployment.configs.staging
+#   File pattern for dandelion config files to one or more staging servers
+# deployment.configs.development
+#   File pattern for dandelion config files to one or more development servers
+#
+
+deployment()
+{
+    # --- Arguments
+    oldrev=$(git rev-parse $1)
+    newrev=$(git rev-parse $2)
+    refname="$3"
+
+    # --- Interpret
+    # 0000->1234 (create)
+    # 1234->2345 (update)
+    # 2345->0000 (delete)
+    if expr "$oldrev" : '0*$' >/dev/null
+    then
+        change_type="create"
+    else
+        if expr "$newrev" : '0*$' >/dev/null
+        then
+            change_type="delete"
+        else
+            change_type="update"
+        fi
+    fi
+
+    # --- Get the revision types
+    newrev_type=$(git cat-file -t $newrev 2> /dev/null)
+    oldrev_type=$(git cat-file -t "$oldrev" 2> /dev/null)
+    case "$change_type" in
+        create|update)
+            rev="$newrev"
+            rev_type="$newrev_type"
+            ;;
+        delete)
+            rev="$oldrev"
+            rev_type="$oldrev_type"
+            ;;
+    esac
+
+    # The revision type tells us what type the commit is, combined with
+    # the location of the ref we can decide between
+    #  - working branch
+    #  - tracking branch
+    #  - unannoted tag
+    #  - annotated tag
+    case "$refname","$rev_type" in
+        refs/tags/*,commit)
+            # un-annotated tag
+            refname_type="tag"
+            short_refname=${refname##refs/tags/}
+            # we don't care about deploying tags
+            return 1
+            ;;
+        refs/tags/*,tag)
+            # annotated tag
+            refname_type="annotated tag"
+            short_refname=${refname##refs/tags/}
+            # we don't care about deploying tags
+            return 1
+            ;;
+        refs/heads/*,commit)
+            # branch
+            refname_type="branch"
+            short_refname=${refname##refs/heads/}
+            ;;
+        refs/remotes/*,commit)
+            # tracking branch (we don't care about this)
+            refname_type="tracking branch"
+            short_refname=${refname##refs/remotes/}
+            #echo >&2 "*** Push-update of tracking branch, $refname"
+            #echo >&2 "***  - no email generated."
+            return 1
+            ;;
+        *)
+            # Anything else (is there anything else?)
+            #echo >&2 "*** Unknown type of update to $refname ($rev_type)"
+            #echo >&2 "***  - no email generated"
+            return 1
+            ;;
+    esac
+    # determine environment
+    case "$short_refname","$refname_type" in
+        master,branch)
+            # deploy to production
+            echo "Deploying to PRODUCTION" >&2
+            env="production"
+            ;;
+        release/*,branch)
+            # deploy to staging
+            echo "Deploying to STAGING" >&2
+            env="staging"
+            ;;
+        development,branch)
+            # deploy to development
+            echo "Deploying to DEVELOPMENT" >&2
+            env="development"
+            ;;
+        *,*tag)
+            # any tag will deploy to production
+            echo "Deploying to PRODUCTION with tag" >&2
+            env="production"
+            # --- DISABLED
+            return 1
+            ;;
+        *)
+            # ignore other refs
+            echo "Ignoring deployment" >&2
+            return 1
+            ;;
+    esac
+    # enumerate deployment config paths, then deploy each to the proper environment
+    for config_file in $(git config "deployment.configs.$env" || echo ''); do
+        # Ensure file actually exists
+        if [ -f $config_file ]; then
+            echo "$(date +'[%Y-%m-%dT%H:%M:%S]') Deploying $short_refname to $env using $(basename $config_file)"
+            echo "---------- STUB DEPLOYMENT, PLEASE IGNORE -------------" >&2
+            #/usr/local/bin/dandelion --log=debug --config="$config_file" deploy $short_refname
+        fi
+    done
+}
+
+
+while read oldrev newrev refname; do
+    echo "Received $oldrev -> $newrev on $refname"
+    deployment $oldrev $newrev $refname
+done
